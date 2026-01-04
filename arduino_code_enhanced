@@ -143,12 +143,12 @@ void handle_calibration() {
     Serial.print(adaptive_threshold);
     Serial.println(" cm");
 
-    // Signal completion with buzzer and LED
+    // Signal completion with specific buzzer tone and LED
     for (int i = 0; i < 3; i++) {
-      digitalWrite(buzzer_pin, HIGH);
+      tone(buzzer_pin, 2500); // Calibration complete beep (2500 Hz)
       digitalWrite(led_pin, HIGH);
       delay(500);
-      digitalWrite(buzzer_pin, LOW);
+      noTone(buzzer_pin); // Stop buzzer
       digitalWrite(led_pin, LOW);
       delay(300);
     }
@@ -235,11 +235,11 @@ void detect_environment() {
       stair_detected = true;
       Serial.println("STAIRS DETECTED!");
 
-      // Alert for stairs
+      // Alert for stairs with rapid high-pitched beeps
       for (int i = 0; i < 5; i++) {
-        digitalWrite(buzzer_pin, HIGH);
+        tone(buzzer_pin, 3000); // Stair detection tone (3000 Hz)
         delay(100);
-        digitalWrite(buzzer_pin, LOW);
+        noTone(buzzer_pin);
         delay(100);
       }
     }
@@ -276,7 +276,11 @@ void danger_zone_alert() {
 
   if (current_time - last_buzzer >= buzzer_interval) {
     buzzer_status = !buzzer_status;
-    digitalWrite(buzzer_pin, buzzer_status);
+    if (buzzer_status) {
+      tone(buzzer_pin, 2000); // 2000 Hz tone for danger
+    } else {
+      noTone(buzzer_pin);
+    }
     last_buzzer = current_time;
   }
 
@@ -296,7 +300,11 @@ void caution_zone_alert() {
 
   if (current_time - last_buzzer >= buzzer_interval) {
     buzzer_status = !buzzer_status;
-    digitalWrite(buzzer_pin, buzzer_status);
+    if (buzzer_status) {
+      tone(buzzer_pin, 1500); // 1500 Hz tone for caution
+    } else {
+      noTone(buzzer_pin);
+    }
     last_buzzer = current_time;
   }
 
@@ -314,7 +322,11 @@ void warning_zone_alert() {
 
   if (current_time - last_buzzer >= buzzer_interval) {
     buzzer_status = !buzzer_status;
-    digitalWrite(buzzer_pin, buzzer_status);
+    if (buzzer_status) {
+      tone(buzzer_pin, 1000); // 1000 Hz tone for warning
+    } else {
+      noTone(buzzer_pin);
+    }
     last_buzzer = current_time;
   }
 
@@ -334,31 +346,41 @@ void distance_check() {
   delayMicroseconds(10);
   digitalWrite(ultrasonic_pinPulse, LOW);
 
-  // Read the echo return time
-  duration = pulseIn(ultrasonic_pinReturn, HIGH);
+  // Read the echo return time with timeout of 30ms (~5 meter max range)
+  duration = pulseIn(ultrasonic_pinReturn, HIGH, 30000);
 
   // Calculate distance
-  distance = (ultrasonic_speed * duration) / 2;
+  if (duration == 0) {
+    // Timeout - no valid reading, set distance to 0 to be ignored
+    distance = 0;
+  } else {
+    distance = (ultrasonic_speed * duration) / 2;
+  }
 
-  // Print debug info if not sleeping/calibrating
+  // Add small delay between readings to avoid interference between pings
+  delay(60);
+
+  // Only print reading if valid (>0) and active
   if (!sleep_mode && !calibration_mode) {
-    Serial.print("Distance: ");
-    Serial.print(distance);
-    Serial.print(" cm");
-    if (wall_following) {
-      Serial.print(" [Wall Following]");
+    if (distance > 0) {
+      Serial.print("Distance: ");
+      Serial.print(distance);
+      Serial.print(" cm");
+      if (wall_following) {
+        Serial.print(" [Wall Following]");
+      }
+      if (stair_detected) {
+        Serial.print(" [STAIRS!]");
+      }
+      Serial.println();
     }
-    if (stair_detected) {
-      Serial.print(" [STAIRS!]");
-    }
-    Serial.println();
   }
 }
 
 // Function to turn off all alarms
 void alarms_off() {
   digitalWrite(led_pin, LOW);
-  digitalWrite(buzzer_pin, LOW);
+  noTone(buzzer_pin); // Stop any playing tone
   led_status = LOW;
   buzzer_status = LOW;
 }
