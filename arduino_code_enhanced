@@ -1,0 +1,364 @@
+// Define pin numbers for the components
+#define voltage_pin 4
+#define buzzer_pin 2
+#define led_pin 9
+#define ground_pin 7
+#define ultrasonic_pinReturn 6
+#define ultrasonic_pinPulse 5
+
+// Define distance zones in centimeters for alerts
+#define DANGER_ZONE 20   // Very close
+#define CAUTION_ZONE 50  // Moderate distance
+#define WARNING_ZONE 100 // Far distance
+
+// Variables for timing and sleep mode
+unsigned long last_activity = 0;
+#define SLEEP_TIMEOUT 30000 // Time to wait before sleeping (30 seconds)
+bool sleep_mode = false;
+int sleep_blink_count = 0;
+
+// Variables for history to detect trends (stairs, walls)
+float distance_history[5] = {0, 0, 0, 0, 0};
+int history_index = 0;
+bool stair_detected = false;
+bool wall_following = false;
+float wall_distance = 0;
+
+// Calibration variables
+bool calibration_mode = false;
+unsigned long calibration_start = 0;
+float min_distance_seen = 999;
+float max_distance_seen = 0;
+int calibration_samples = 0;
+float adaptive_threshold = 100; // Default threshold
+
+// General variables for sensors and outputs
+int current_voltage = 0;
+int return_time = 0;
+bool led_status = 0;
+bool buzzer_status = 0;
+int distance = 0;
+int buzzer_interval = 0;
+int led_interval = 0;
+float ultrasonic_speed = 0.0343; // Speed of sound in cm/microsecond
+unsigned long current_time = 0;
+unsigned long last_buzzer = 0;
+unsigned long last_led = 0;
+long duration = 0;
+
+void setup() {
+  // Set the mode for each pin (Input or Output)
+  pinMode(voltage_pin, OUTPUT);
+  pinMode(buzzer_pin, OUTPUT);
+  pinMode(led_pin, OUTPUT);
+  pinMode(ground_pin, OUTPUT);
+  pinMode(ultrasonic_pinReturn, INPUT);
+  pinMode(ultrasonic_pinPulse, OUTPUT);
+
+  // Initialize pin states
+  digitalWrite(voltage_pin, HIGH);
+  digitalWrite(ground_pin, LOW);
+  digitalWrite(led_pin, LOW);
+  digitalWrite(buzzer_pin, LOW);
+  digitalWrite(ultrasonic_pinPulse, LOW);
+
+  // Start serial communication for debugging
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("=== SMART BLIND STICK - ENHANCED VERSION ===");
+  Serial.println("Starting 10-second calibration...");
+
+  // Begin the calibration process
+  start_calibration();
+}
+
+void loop() {
+  current_time = millis(); // Get current time
+  distance_check();        // Measure distance
+
+  // If calibrating, run the calibration logic and skip the rest
+  if (calibration_mode) {
+    handle_calibration();
+    return;
+  }
+
+  // Check if we should go to sleep or wake up
+  if (check_sleep_mode()) {
+    return;
+  }
+
+  // Check for stairs or walls
+  detect_environment();
+
+  // If an object is detected within range
+  if (distance > 0 && distance < adaptive_threshold) {
+    last_activity = current_time; // Update activity timer
+
+    // Trigger appropriate alert based on distance
+    if (distance <= DANGER_ZONE) {
+      danger_zone_alert();
+    } else if (distance <= CAUTION_ZONE) {
+      caution_zone_alert();
+    } else if (distance <= WARNING_ZONE) {
+      warning_zone_alert();
+    }
+  } else {
+    // No object in range, turn off alarms
+    alarms_off();
+  }
+}
+
+// Function to start the calibration mode
+void start_calibration() {
+  calibration_mode = true;
+  calibration_start = current_time;
+  min_distance_seen = 999;
+  max_distance_seen = 0;
+  calibration_samples = 0;
+
+  // Blink LED to indicate start of calibration
+  for (int i = 0; i < 6; i++) {
+    digitalWrite(led_pin, HIGH);
+    delay(200);
+    digitalWrite(led_pin, LOW);
+    delay(200);
+  }
+}
+
+// Function to handle the calibration process
+void handle_calibration() {
+  // If calibration time is over (10 seconds)
+  if (current_time - calibration_start > 10000) {
+    calibration_mode = false;
+
+    // Set a new threshold based on max distance seen
+    if (max_distance_seen > 50) {
+      adaptive_threshold = max_distance_seen * 0.8;
+    } else {
+      adaptive_threshold = 100;
+    }
+
+    Serial.print("Calibration complete! Adaptive threshold set to: ");
+    Serial.print(adaptive_threshold);
+    Serial.println(" cm");
+
+    // Signal completion with buzzer and LED
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(buzzer_pin, HIGH);
+      digitalWrite(led_pin, HIGH);
+      delay(500);
+      digitalWrite(buzzer_pin, LOW);
+      digitalWrite(led_pin, LOW);
+      delay(300);
+    }
+    return;
+  }
+
+  // While calibrating, track min and max distances
+  if (distance > 0) {
+    calibration_samples++;
+    if (distance < min_distance_seen)
+      min_distance_seen = distance;
+    if (distance > max_distance_seen)
+      max_distance_seen = distance;
+
+    Serial.print("Calibrating... Min: ");
+    Serial.print(min_distance_seen);
+    Serial.print(" Max: ");
+    Serial.print(max_distance_seen);
+    Serial.print(" Current: ");
+    Serial.println(distance);
+  }
+}
+
+// Function to handle sleep mode logic
+bool check_sleep_mode() {
+  // Check if we should enter sleep mode (inactive for too long)
+  if (current_time - last_activity > SLEEP_TIMEOUT && !sleep_mode) {
+    Serial.println("Entering sleep mode...");
+    sleep_mode = true;
+    sleep_blink_count = 0;
+
+    // Signal entering sleep mode
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(led_pin, HIGH);
+      delay(1000);
+      digitalWrite(led_pin, LOW);
+      delay(500);
+    }
+  }
+
+  // If in sleep mode
+  if (sleep_mode) {
+    // Check if we should wake up (object detected)
+    if (distance > 0 && distance < adaptive_threshold) {
+      Serial.println("Waking up from sleep mode!");
+      sleep_mode = false;
+      last_activity = current_time;
+
+      // Signal waking up
+      for (int i = 0; i < 5; i++) {
+        digitalWrite(led_pin, HIGH);
+        delay(100);
+        digitalWrite(led_pin, LOW);
+        delay(100);
+      }
+      return false;
+    }
+
+    // Blink LED occasionally while sleeping
+    sleep_blink_count++;
+    if (sleep_blink_count > 50) {
+      digitalWrite(led_pin, HIGH);
+      delay(100);
+      digitalWrite(led_pin, LOW);
+      sleep_blink_count = 0;
+    }
+    delay(100);
+    return true;
+  }
+
+  return false;
+}
+
+// Function to detect steps or walls based on distance history
+void detect_environment() {
+  // Store current distance in history
+  distance_history[history_index] = distance;
+  history_index = (history_index + 1) % 5;
+
+  // Check for sudden large change in distance (potential stairs)
+  float distance_change = abs(distance_history[0] - distance_history[4]);
+  if (distance_change > 30 && distance > 0) {
+    if (!stair_detected) {
+      stair_detected = true;
+      Serial.println("STAIRS DETECTED!");
+
+      // Alert for stairs
+      for (int i = 0; i < 5; i++) {
+        digitalWrite(buzzer_pin, HIGH);
+        delay(100);
+        digitalWrite(buzzer_pin, LOW);
+        delay(100);
+      }
+    }
+  } else {
+    stair_detected = false;
+  }
+
+  // Check for consistent distance (potential wall)
+  bool consistent_wall = true;
+  if (distance > 20 && distance < 60) {
+    for (int i = 0; i < 4; i++) {
+      if (abs(distance_history[i] - distance_history[i + 1]) > 10) {
+        consistent_wall = false;
+        break;
+      }
+    }
+
+    if (consistent_wall && !wall_following) {
+      wall_following = true;
+      wall_distance = distance;
+      Serial.print("Wall following mode activated at ");
+      Serial.print(wall_distance);
+      Serial.println(" cm");
+    }
+  } else {
+    wall_following = false;
+  }
+}
+
+// Alert for immediate danger (closest)
+void danger_zone_alert() {
+  buzzer_interval = 100; // Fast beep
+  led_interval = 100;    // Fast blink
+
+  if (current_time - last_buzzer >= buzzer_interval) {
+    buzzer_status = !buzzer_status;
+    digitalWrite(buzzer_pin, buzzer_status);
+    last_buzzer = current_time;
+  }
+
+  if (current_time - last_led >= led_interval) {
+    led_status = !led_status;
+    digitalWrite(led_pin, led_status);
+    last_led = current_time;
+  }
+
+  Serial.println("DANGER ZONE!");
+}
+
+// Alert for caution zone (middle distance)
+void caution_zone_alert() {
+  buzzer_interval = 300; // Medium beep
+  led_interval = 300;    // Medium blink
+
+  if (current_time - last_buzzer >= buzzer_interval) {
+    buzzer_status = !buzzer_status;
+    digitalWrite(buzzer_pin, buzzer_status);
+    last_buzzer = current_time;
+  }
+
+  if (current_time - last_led >= led_interval) {
+    led_status = !led_status;
+    digitalWrite(led_pin, led_status);
+    last_led = current_time;
+  }
+}
+
+// Alert for warning zone (farthest distance)
+void warning_zone_alert() {
+  buzzer_interval = 600; // Slow beep
+  led_interval = 600;    // Slow blink
+
+  if (current_time - last_buzzer >= buzzer_interval) {
+    buzzer_status = !buzzer_status;
+    digitalWrite(buzzer_pin, buzzer_status);
+    last_buzzer = current_time;
+  }
+
+  if (current_time - last_led >= led_interval) {
+    led_status = !led_status;
+    digitalWrite(led_pin, led_status);
+    last_led = current_time;
+  }
+}
+
+// Function to measure distance using ultrasonic sensor
+void distance_check() {
+  // Send a pulse
+  digitalWrite(ultrasonic_pinPulse, LOW);
+  delayMicroseconds(2);
+  digitalWrite(ultrasonic_pinPulse, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(ultrasonic_pinPulse, LOW);
+
+  // Read the echo return time
+  duration = pulseIn(ultrasonic_pinReturn, HIGH);
+
+  // Calculate distance
+  distance = (ultrasonic_speed * duration) / 2;
+
+  // Print debug info if not sleeping/calibrating
+  if (!sleep_mode && !calibration_mode) {
+    Serial.print("Distance: ");
+    Serial.print(distance);
+    Serial.print(" cm");
+    if (wall_following) {
+      Serial.print(" [Wall Following]");
+    }
+    if (stair_detected) {
+      Serial.print(" [STAIRS!]");
+    }
+    Serial.println();
+  }
+}
+
+// Function to turn off all alarms
+void alarms_off() {
+  digitalWrite(led_pin, LOW);
+  digitalWrite(buzzer_pin, LOW);
+  led_status = LOW;
+  buzzer_status = LOW;
+}
